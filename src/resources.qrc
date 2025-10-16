@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/">
+        <file>icons/pcie_demo.ico</file>
+    </qresource>
+</RCC> 

@@ -1,0 +1,10 @@
+{
+	"AppName": "",
+	"FolderPath": "D:\\\\",
+	"ServerUrl": "",
+	"Server": true,
+	"FileBlockSize": 4096,
+	"IoRequestNum": 32,
+	"PcieCpuId": 1,
+	"DiskCpuId": 2
+}
