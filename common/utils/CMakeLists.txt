@@ -7,6 +7,8 @@ add_library(utils
   ThreadAffinity.h
   Logger.cpp
   Logger.h
+  ShmRing.cpp
+  ShmRing.h
 )
 
 # 包含目录

@@ -14,6 +14,7 @@
 #include "PcieFacade.h"
 #include "json_struct.h"
 #include "../common/InOutputData/InputDataFromMemory.h"
+#include "../common/InOutputData/InputDataFromSHM.h"
 #include "../common/utils/AlignedBufferPool.h"
 
 #ifdef _WIN32
@@ -176,6 +177,8 @@ private:
   InputDataReaderInitParam m_InputDataFromFileUseIOCP_InitParam;
   // 内存生成输入（测试）
   CInputDataFromMemory *m_pMemoryInput;
+  // 共享内存输入（SHM）
+  CInputDataFromSHM *m_pShmInput;
   // 当前用于发送的缓冲池（若输入端提供）
   std::shared_ptr<AlignedBufferPool> m_pSendBufferPool;
 

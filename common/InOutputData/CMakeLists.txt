@@ -6,6 +6,8 @@ set(INOUTPUTDATA_SOURCES
   InputBlock.h
   InputDataFromMemory.cpp
   InputDataFromMemory.h
+  InputDataFromSHM.cpp
+  InputDataFromSHM.h
 )
 
 if (WIN32)

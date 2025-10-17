@@ -35,6 +35,10 @@ MainWindow::MainWindow(QWidget *parent)
   m_pMemoryInput = new CInputDataFromMemory();
   m_pMemoryInput->SetInputDataListener(this);
 
+  // 创建共享内存输入（SHM）
+  m_pShmInput = new CInputDataFromSHM();
+  m_pShmInput->SetInputDataListener(this);
+
   // 初始化参数
 
   // 获取应用程序路径
@@ -62,6 +66,10 @@ MainWindow::~MainWindow() {
   }
   if (m_pMemoryInput) {
     delete m_pMemoryInput;
+  }
+  if (m_pShmInput) {
+    m_pShmInput->Destroy();
+    delete m_pShmInput;
   }
 
   delete ui;
@@ -101,6 +109,8 @@ void MainWindow::initUI() {
   connect(ui->radioSendMode2, &QRadioButton::toggled, this,
           &MainWindow::onSendModeChanged);
   connect(ui->chkUseMemorySource, &QCheckBox::toggled, this,
+    &MainWindow::onInputSourceChanged);
+  connect(ui->chkUseShmSource, &QCheckBox::toggled, this,
     &MainWindow::onInputSourceChanged);
 
   loadSetting();
@@ -146,12 +156,39 @@ void MainWindow::initUI() {
   }
 }
 
-void MainWindow::onInputSourceChanged() { updateInputSourceLabel(); }
+void MainWindow::onInputSourceChanged() {
+  // Enforce mutual exclusion between memory source and SHM source checkboxes
+  if (!ui) return;
+
+  // Determine which checkbox sent the signal
+  QObject *s = sender();
+  if (s == ui->chkUseMemorySource) {
+    if (ui->chkUseMemorySource->isChecked()) {
+      // uncheck SHM
+      ui->chkUseShmSource->blockSignals(true);
+      ui->chkUseShmSource->setChecked(false);
+      ui->chkUseShmSource->blockSignals(false);
+    }
+  } else if (s == ui->chkUseShmSource) {
+    if (ui->chkUseShmSource->isChecked()) {
+      // uncheck memory
+      ui->chkUseMemorySource->blockSignals(true);
+      ui->chkUseMemorySource->setChecked(false);
+      ui->chkUseMemorySource->blockSignals(false);
+    }
+  }
+
+  updateInputSourceLabel();
+}
 
 void MainWindow::updateInputSourceLabel() {
   if (!ui) return;
+  bool use_shm = ui->chkUseShmSource->isChecked();
   bool use_memory = ui->chkUseMemorySource->isChecked();
-  if (use_memory) {
+  if (use_shm) {
+    ui->labelInputSource->setText(tr("输入源：共享内存"));
+    statusBar()->showMessage(tr("输入源：共享内存（POSIX shm）"));
+  } else if (use_memory) {
     ui->labelInputSource->setText(tr("输入源：内存"));
     statusBar()->showMessage(tr("输入源：内存生成（测试）"));
   } else {
@@ -250,6 +287,13 @@ bool MainWindow::selectFolderDialog(QString &folderPath) {
 bool MainWindow::startSendData() {
   // 根据 UI 选择决定使用文件输入还是内存测试输入
   bool use_memory = ui->chkUseMemorySource->isChecked();
+  // 支持通过环境变量快速切换到 SHM 输入以便调试
+  const char *use_shm_env = std::getenv("PCIE_USE_SHM");
+  bool use_shm = false;
+  if (use_shm_env) {
+    std::string v(use_shm_env);
+    if (v == "1" || v == "true" || v == "TRUE") use_shm = true;
+  }
 
   if (use_memory) {
     // 初始化内存输入参数
@@ -260,9 +304,9 @@ bool MainWindow::startSendData() {
     memParam.cpu_id = static_cast<int>(m_Setting.DiskCpuId);
 
     // log the parameters so we can verify the memory path is taken at runtime
-    LOG_INFO("启动内存输入: block_size=%u, io_request_num=%u, cpu_id=%d, loop=%d",
-             memParam.block_size, memParam.io_request_num, memParam.cpu_id,
-             memParam.loop ? 1 : 0
+  LOG_INFO("启动内存输入: block_size=%u, io_request_num=%u, cpu_id=%d, loop=%d",
+       memParam.block_size, memParam.io_request_num, memParam.cpu_id,
+       memParam.loop ? 1 : 0);
 
     if (!m_pMemoryInput->Init(&memParam)) {
       LOG_ERROR("内存输入 Init 失败");
@@ -277,6 +321,31 @@ bool MainWindow::startSendData() {
 
     if (!m_pMemoryInput->Start()) {
       LOG_ERROR("内存输入 Start 失败");
+      return false;
+    }
+
+    return true;
+  } else if (use_shm) {
+    // 初始化并启动 SHM 输入
+    InputDataFromSHMInitParam shmParam;
+    shmParam.shm_name = "/pcie_shm_ring";
+    shmParam.slot_count = std::max(1u, std::max(1u, m_Setting.IoRequestNum));
+    shmParam.slot_size = std::max(1u, m_Setting.FileBlockSize) * 1024;
+    shmParam.create_if_missing = false;
+
+    if (!m_pShmInput->Init(&shmParam)) {
+      LOG_ERROR("SHM 输入 Init 失败");
+      return false;
+    }
+
+#ifndef _WIN32
+    auto pool = m_pShmInput->GetBufferPool();
+    m_pSendBufferPool = pool;
+    m_pPcieDevice->SetBufferPool(pool);
+#endif
+
+    if (!m_pShmInput->Start()) {
+      LOG_ERROR("SHM 输入 Start 失败");
       return false;
     }
 
@@ -388,6 +457,7 @@ void MainWindow::onOpenDevice() {
   ui->editSendBufferSize->setEnabled(false);
   // 打开设备后禁止切换测试模式
   ui->chkUseMemorySource->setEnabled(false);
+  ui->chkUseShmSource->setEnabled(false);
 }
 
 void MainWindow::onCloseDevice() {
@@ -414,6 +484,7 @@ void MainWindow::onCloseDevice() {
   ui->btnStart->setText(tr("开始"));
   // 关闭设备后允许切换测试模式
   ui->chkUseMemorySource->setEnabled(true);
+  ui->chkUseShmSource->setEnabled(true);
   // 清理发送缓冲池引用
   m_pSendBufferPool.reset();
 }
