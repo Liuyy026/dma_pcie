@@ -122,6 +122,9 @@ bool CInputDataFromMemory::Start() {
   }
 
   running_.store(true, std::memory_order_release);
+  LOG_INFO("内存输入 Start 成功: block_size=%u, io_request_num=%u, cpu_id=%d, external=%d",
+           init_param_.block_size, init_param_.io_request_num,
+           init_param_.cpu_id, m_OrderedDataProcessor.IsExternalMemoryMode() ? 1 : 0);
   return true;
 }
 

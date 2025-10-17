@@ -48,7 +48,8 @@ bool PcieFacade::OpenDevice(unsigned int deviceIndex,
 #else
   if (!m_device->Open(m_deviceList[deviceIndex].devicePath, workMode)) {
 #endif
-    return false;
+      LOG_ERROR("打开设备失败: %s", m_deviceList[deviceIndex].devicePath.c_str());
+      return false;
   }
 
   // 根据工作模式创建DMA通道
@@ -72,10 +73,11 @@ bool PcieFacade::OpenDevice(unsigned int deviceIndex,
     m_dmaChannel =
         std::make_unique<ChannelType>(send_handle, cpuId);
 #endif
-    if (!m_dmaChannel->Initialize(sendDmaSize, sendBufferSize)) {
-      CloseDevice();
-      return false;
-    }
+      if (!m_dmaChannel->Initialize(sendDmaSize, sendBufferSize)) {
+        LOG_ERROR("DMA 通道初始化失败");
+        CloseDevice();
+        return false;
+      }
 #ifndef _WIN32
     if (m_sendBufferPool) {
       m_dmaChannel->SetBufferPool(m_sendBufferPool);
@@ -105,9 +107,14 @@ bool PcieFacade::Start() {
     return false;
   }
 
+
+  LOG_INFO("开始启动 DMA 通道");
   if (m_dmaChannel && !m_dmaChannel->Start()) {
+    LOG_ERROR("DMA 通道启动失败");
     return false;
   }
+
+  LOG_INFO("设备与 DMA 通道已启动");
 
   return true;
 }
@@ -151,7 +158,11 @@ bool PcieFacade::Send(unsigned char *data, unsigned int length) {
     return false;
   }
 
-  return m_dmaChannel->Send(data, length);
+
+  LOG_INFO("PcieFacade::Send 请求: ptr=%p, len=%u", data, length);
+  bool res = m_dmaChannel->Send(data, length);
+  LOG_INFO("PcieFacade::Send 返回: %d", res ? 1 : 0);
+  return res;
 }
 
 #ifndef _WIN32

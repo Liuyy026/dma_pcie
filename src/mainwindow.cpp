@@ -11,6 +11,7 @@
 #include <QIcon>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
 
 MainWindow::MainWindow(QWidget *parent)
@@ -120,6 +121,29 @@ void MainWindow::initUI() {
   updateInputSourceLabel();
   // 扫描设备并更新设备列表
   scanDevices();
+
+  // 如果设置了环境变量 PCIE_AUTO_START_MEMORY=1 或 true，则自动打开设备并启动内存输入（用于无交互调试）
+  const char *auto_env = std::getenv("PCIE_AUTO_START_MEMORY");
+  if (auto_env) {
+    std::string val(auto_env);
+    if (val == "1" || val == "true" || val == "TRUE") {
+      LOG_INFO("检测到 PCIE_AUTO_START_MEMORY=%s，尝试自动打开设备并启动内存输入", auto_env);
+      // 选中内存输入选项并设置为循环发送模式，确保产生数据（total_bytes==0 时 loop=true 表示无限发送）
+      ui->chkUseMemorySource->setChecked(true);
+      // 选择发送模式 2（循环），并同步内部状态
+      if (ui->radioSendMode2) {
+        ui->radioSendMode2->setChecked(true);
+      }
+      m_iSendMode = 1;
+      // 延迟执行 open/start，确保 UI 初始化完成
+      QTimer::singleShot(500, this, [this]() {
+        // 调用现有的槽函数以复用打开/启动逻辑
+        onOpenDevice();
+        // 再延迟一点以保证设备状态更新后再启动传输
+        QTimer::singleShot(200, this, [this]() { onStartTransfer(); });
+      });
+    }
+  }
 }
 
 void MainWindow::onInputSourceChanged() { updateInputSourceLabel(); }
@@ -235,6 +259,11 @@ bool MainWindow::startSendData() {
     memParam.io_request_num = std::max(1u, m_Setting.IoRequestNum);
     memParam.cpu_id = static_cast<int>(m_Setting.DiskCpuId);
 
+    // log the parameters so we can verify the memory path is taken at runtime
+    LOG_INFO("启动内存输入: block_size=%u, io_request_num=%u, cpu_id=%d, loop=%d",
+             memParam.block_size, memParam.io_request_num, memParam.cpu_id,
+             memParam.loop ? 1 : 0
+
     if (!m_pMemoryInput->Init(&memParam)) {
       LOG_ERROR("内存输入 Init 失败");
       return false;
@@ -304,6 +333,7 @@ void MainWindow::ShowErrorMessage(const std::string &sErrorInfo) {
 
 void MainWindow::InputData(unsigned char *pData, std::uint64_t uiDataLength,
                            void *pParam) {
+  LOG_INFO("MainWindow::InputData 回调: ptr=%p, len=%llu", pData, (unsigned long long)uiDataLength);
   // 直接发送数据
   while (!m_pPcieDevice->Send(pData, uiDataLength)) {
     if (m_bStopSendData)

@@ -277,6 +277,7 @@ bool DmaChannelLinux::Send(unsigned char *data, unsigned int length) {
     if (!send_queue_.PutFixedLength(data, length)) {
       return false;
     }
+    LOG_INFO("Send 路径: 已放入 send_queue_, len=%u", length);
 #ifdef DESCRIPTOR_QUEUE_MODE
     if (release_after_copy && buffer_pool_) {
       buffer_pool_->Release(data);
@@ -361,11 +362,12 @@ void DmaChannelLinux::SendThreadFunc() {
         step_.store(2, std::memory_order_relaxed);
       } else {
         step_.store(3, std::memory_order_relaxed);
-        // descriptor-path write: measure latency
-    auto t0 = std::chrono::steady_clock::now();
-    ssize_t bytes_written =
-      ::write(device_fd_, desc.ptr, static_cast<size_t>(desc.length));
-    auto t1 = std::chrono::steady_clock::now();
+    // descriptor-path write: measure latency
+  LOG_INFO("描述符路径: 准备写入 device_fd=%d, ptr=%p, len=%u", device_fd_, desc.ptr, desc.length);
+  auto t0 = std::chrono::steady_clock::now();
+  ssize_t bytes_written = ::write(device_fd_, desc.ptr, static_cast<size_t>(desc.length));
+  auto t1 = std::chrono::steady_clock::now();
+  LOG_INFO("描述符路径: write 返回: %zd, errno=%d (%s)", bytes_written, errno, std::strerror(errno));
 
         if (bytes_written < 0) {
           LOG_ERROR("写入XDMA设备失败: %s", std::strerror(errno));
@@ -415,10 +417,11 @@ void DmaChannelLinux::SendThreadFunc() {
 
       step_.store(3, std::memory_order_relaxed);
       // copy-path write: measure latency
-      auto t0c = std::chrono::steady_clock::now();
-      ssize_t bytes_written =
-          ::write(device_fd_, buffer.data(), static_cast<size_t>(data_size));
-      auto t1c = std::chrono::steady_clock::now();
+    LOG_INFO("拷贝路径: 准备写入 device_fd=%d, buf=%p, len=%u", device_fd_, buffer.data(), data_size);
+    auto t0c = std::chrono::steady_clock::now();
+    ssize_t bytes_written = ::write(device_fd_, buffer.data(), static_cast<size_t>(data_size));
+    auto t1c = std::chrono::steady_clock::now();
+    LOG_INFO("拷贝路径: write 返回: %zd, errno=%d (%s)", bytes_written, errno, std::strerror(errno));
 
       if (bytes_written < 0) {
         LOG_ERROR("写入XDMA设备失败: %s", std::strerror(errno));
