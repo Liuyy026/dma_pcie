@@ -165,6 +165,26 @@ bool PcieFacade::Send(unsigned char *data, unsigned int length) {
   return res;
 }
 
+bool PcieFacade::SendRequest(const DmaSendRequest& request) {
+  if (!m_dmaChannel) {
+    LOG_ERROR("DMA通道未初始化");
+    return false;
+  }
+
+  // 当前过渡阶段：直接指针发送
+  if (!request.direct_ptr || request.direct_len == 0) {
+    LOG_ERROR("SendRequest: 非法请求 (ptr=%p, len=%u)",
+              request.direct_ptr, request.direct_len);
+    return false;
+  }
+
+  LOG_DEBUG("PcieFacade::SendRequest 请求: ptr=%p, len=%u, owner=%p",
+            request.direct_ptr, request.direct_len, request.buffer_owner);
+  bool res = m_dmaChannel->Send(request.direct_ptr, request.direct_len);
+  LOG_DEBUG("PcieFacade::SendRequest 返回: %d", res ? 1 : 0);
+  return res;
+}
+
 #ifndef _WIN32
 void PcieFacade::SetBufferPool(std::shared_ptr<AlignedBufferPool> pool) {
   m_sendBufferPool = std::move(pool);

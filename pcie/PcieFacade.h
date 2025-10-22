@@ -4,12 +4,39 @@
 #include "PcieScanner.h"
 #include "PcieTypes.h"
 #include <memory>
+#include <cstdint>
 
 // #define DMA_ASYNC
 
 #ifndef _WIN32
 class AlignedBufferPool;
 #endif
+
+/**
+ * @brief 解耦的DMA发送请求
+ * 
+ * 过渡设计：支持多种数据源
+ * - 当前: direct_ptr 指向实际缓冲
+ * - 未来: file_offset + mmap 映射
+ * - 未来: iova 用户态DMA
+ */
+struct DmaSendRequest {
+  // 当前模式：直接指针发送
+  unsigned char* direct_ptr = nullptr;
+  std::uint32_t direct_len = 0;
+  
+  // 过渡字段：缓冲源标识，用于后续生命周期管理
+  void* buffer_owner = nullptr;  // 如缓冲池指针
+  
+  // 未来mmap模式预留
+  // std::uint64_t file_offset = 0;
+  // std::uint32_t mmap_len = 0;
+  // void* mmap_handle = nullptr;
+  
+  // 未来UDMA预留
+  // std::uint64_t iova = 0;
+  // std::uint32_t iova_len = 0;
+};
 
 #ifdef _WIN32
 #include "PcieDevice.h"
@@ -54,7 +81,12 @@ public:
   void SetSpeed(int index);
 
   // 数据传输
+  // 旧接口（保留兼容）
   bool Send(unsigned char *data, unsigned int length);
+  
+  // 新接口（解耦缓冲生命周期）
+  // 调用者需自行管理请求中缓冲的生命周期
+  bool SendRequest(const DmaSendRequest& request);
 #ifndef _WIN32
   void SetBufferPool(std::shared_ptr<AlignedBufferPool> pool);
 #endif

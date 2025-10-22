@@ -8,6 +8,7 @@ set(INOUTPUTDATA_SOURCES
   InputDataFromMemory.h
   InputDataFromSHM.cpp
   InputDataFromSHM.h
+  FileDataProvider.h
 )
 
 if (WIN32)
@@ -27,6 +28,8 @@ else()
   list(APPEND INOUTPUTDATA_SOURCES
     InputDataFromFileUsePOSIX.cpp
     InputDataFromFileUsePOSIX.h
+    PreadFileDataProvider.cpp
+    PreadFileDataProvider.h
   )
 endif()
 
