@@ -159,9 +159,9 @@ bool PcieFacade::Send(unsigned char *data, unsigned int length) {
   }
 
 
-  LOG_INFO("PcieFacade::Send 请求: ptr=%p, len=%u", data, length);
+  LOG_DEBUG("PcieFacade::Send 请求: ptr=%p, len=%u", data, length);
   bool res = m_dmaChannel->Send(data, length);
-  LOG_INFO("PcieFacade::Send 返回: %d", res ? 1 : 0);
+  LOG_DEBUG("PcieFacade::Send 返回: %d", res ? 1 : 0);
   return res;
 }
 

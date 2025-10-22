@@ -16,12 +16,14 @@ typedef struct _InputDataFromFileUseIOCPInitParam_ {
   std::vector<std::string> file_list;
   unsigned int block_size;
   unsigned int io_request_num;
+  unsigned int pending_slack;
   bool loop;
   int cpu_id;
 
   _InputDataFromFileUseIOCPInitParam_() {
     block_size = 512 * 1024;
     io_request_num = 16;
+    pending_slack = 0;
     loop = false;
     cpu_id = -1;
   }

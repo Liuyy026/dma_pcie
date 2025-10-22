@@ -58,9 +58,7 @@ private:
   std::atomic<int> step_;
 
   std::atomic<std::uint64_t> total_sent_;
-  std::atomic<std::uint64_t> last_sent_;
-  // 时间戳（纳秒），用于基于实际时间间隔计算速率
-  std::atomic<std::uint64_t> last_update_ns_;
+  std::atomic<std::uint64_t> first_send_ns_{0};
   // Diagnostic counters (atomic to update from worker thread)
   std::atomic<std::uint64_t> desc_write_count_{0};
   std::atomic<std::uint64_t> desc_write_ns_total_{0};

@@ -4,7 +4,6 @@
 #include <cstdint>
 #endif
 #include "ui_mainwindow.h"
-#include <QDateTime>
 #include <QDebug>
 #include <QDir>
 #include <QFileInfo>
@@ -14,10 +13,12 @@
 #include <cstdlib>
 #include <fstream>
 
+#include "../common/utils/Logger.h"
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), ui(new Ui::MainWindow), m_iWorkMode(0),
       m_iSendMode(0), m_uiSendBufferSize(64 * 1024 * 1024), m_bStopSendData(0),
-      m_bHardwareSyncOpen(false), m_bHardwareSyncEnable(false) {
+  m_bHardwareSyncOpen(false), m_bHardwareSyncEnable(false) {
   ui->setupUi(this);
 
   // 设置应用程序图标
@@ -121,7 +122,7 @@ void MainWindow::initUI() {
   // 设置定时器
   m_pTimer = new QTimer(this);
   connect(m_pTimer, &QTimer::timeout, this, &MainWindow::onTimerUpdate);
-  m_pTimer->start(1000);
+  m_pTimer->start(500);
 
   // 默认选择发送模式1
   ui->radioSendMode1->setChecked(true);
@@ -132,12 +133,15 @@ void MainWindow::initUI() {
   // 扫描设备并更新设备列表
   scanDevices();
 
-  // 如果设置了环境变量 PCIE_AUTO_START_MEMORY=1 或 true，则自动打开设备并启动内存输入（用于无交互调试）
-  const char *auto_env = std::getenv("PCIE_AUTO_START_MEMORY");
-  if (auto_env) {
-    std::string val(auto_env);
+  // 检查环境变量以启用自动启动模式
+  const char *auto_memory_env = std::getenv("PCIE_AUTO_START_MEMORY");
+  const char *auto_file_env = std::getenv("PCIE_AUTO_START_FILE");
+  const char *auto_shm_env = std::getenv("PCIE_AUTO_START_SHM");
+  
+  if (auto_memory_env) {
+    std::string val(auto_memory_env);
     if (val == "1" || val == "true" || val == "TRUE") {
-      LOG_INFO("检测到 PCIE_AUTO_START_MEMORY=%s，尝试自动打开设备并启动内存输入", auto_env);
+      LOG_INFO("检测到 PCIE_AUTO_START_MEMORY=%s，尝试自动打开设备并启动内存输入", auto_memory_env);
       // 选中内存输入选项并设置为循环发送模式，确保产生数据（total_bytes==0 时 loop=true 表示无限发送）
       ui->chkUseMemorySource->setChecked(true);
       // 选择发送模式 2（循环），并同步内部状态
@@ -147,9 +151,40 @@ void MainWindow::initUI() {
       m_iSendMode = 1;
       // 延迟执行 open/start，确保 UI 初始化完成
       QTimer::singleShot(500, this, [this]() {
-        // 调用现有的槽函数以复用打开/启动逻辑
         onOpenDevice();
-        // 再延迟一点以保证设备状态更新后再启动传输
+        QTimer::singleShot(200, this, [this]() { onStartTransfer(); });
+      });
+    }
+  } else if (auto_file_env) {
+    std::string val(auto_file_env);
+    if (val == "1" || val == "true" || val == "TRUE") {
+      LOG_INFO("检测到 PCIE_AUTO_START_FILE=%s，尝试自动打开设备并启动文件输入", auto_file_env);
+      // 确保文件输入源被选中（两个源都未勾选时的默认状态）
+      ui->chkUseMemorySource->setChecked(false);
+      ui->chkUseShmSource->setChecked(false);
+      // 选择发送模式 2（循环）
+      if (ui->radioSendMode2) {
+        ui->radioSendMode2->setChecked(true);
+      }
+      m_iSendMode = 1;
+      // 延迟执行 open/start
+      QTimer::singleShot(500, this, [this]() {
+        onOpenDevice();
+        QTimer::singleShot(200, this, [this]() { onStartTransfer(); });
+      });
+    }
+  } else if (auto_shm_env) {
+    std::string val(auto_shm_env);
+    if (val == "1" || val == "true" || val == "TRUE") {
+      LOG_INFO("检测到 PCIE_AUTO_START_SHM=%s，尝试自动打开设备并启动SHM输入", auto_shm_env);
+      // 选中SHM输入选项并设置为循环发送模式
+      ui->chkUseShmSource->setChecked(true);
+      if (ui->radioSendMode2) {
+        ui->radioSendMode2->setChecked(true);
+      }
+      m_iSendMode = 1;
+      QTimer::singleShot(500, this, [this]() {
+        onOpenDevice();
         QTimer::singleShot(200, this, [this]() { onStartTransfer(); });
       });
     }
@@ -296,6 +331,7 @@ bool MainWindow::startSendData() {
   }
 
   if (use_memory) {
+    CLogger::GetInstance().SetModeTag("memory");
     // 初始化内存输入参数
     InputDataFromMemoryInitParam memParam;
     memParam.loop = (m_iSendMode == 1);
@@ -310,6 +346,7 @@ bool MainWindow::startSendData() {
 
     if (!m_pMemoryInput->Init(&memParam)) {
       LOG_ERROR("内存输入 Init 失败");
+      CLogger::GetInstance().SetModeTag("general");
       return false;
     }
 
@@ -321,20 +358,26 @@ bool MainWindow::startSendData() {
 
     if (!m_pMemoryInput->Start()) {
       LOG_ERROR("内存输入 Start 失败");
+      CLogger::GetInstance().SetModeTag("general");
       return false;
     }
 
     return true;
   } else if (use_shm) {
+    CLogger::GetInstance().SetModeTag("shm");
     // 初始化并启动 SHM 输入
     InputDataFromSHMInitParam shmParam;
     shmParam.shm_name = "/pcie_shm_ring";
-    shmParam.slot_count = std::max(1u, std::max(1u, m_Setting.IoRequestNum));
-    shmParam.slot_size = std::max(1u, m_Setting.FileBlockSize) * 1024;
-    shmParam.create_if_missing = false;
+    // 性能优化：扩大缓冲区，从32个slot增加到至少128个
+    // 以前: slot_count = min(32, IoRequestNum) = 16MB总缓冲
+    // 现在: slot_count = 128 = 256MB总缓冲 (使用2MB/slot)
+    shmParam.slot_count = std::max(128u, std::max(1u, m_Setting.IoRequestNum) * 4);
+    shmParam.slot_size = std::max(2048u, std::max(1u, m_Setting.FileBlockSize) * 1024); // 至少2MB/slot
+    shmParam.create_if_missing = true;  // 允许自动创建SHM，避免初始化失败
 
     if (!m_pShmInput->Init(&shmParam)) {
       LOG_ERROR("SHM 输入 Init 失败");
+      CLogger::GetInstance().SetModeTag("general");
       return false;
     }
 
@@ -346,22 +389,30 @@ bool MainWindow::startSendData() {
 
     if (!m_pShmInput->Start()) {
       LOG_ERROR("SHM 输入 Start 失败");
+      CLogger::GetInstance().SetModeTag("general");
       return false;
     }
 
     return true;
   } else {
+    CLogger::GetInstance().SetModeTag("file");
     InputDataReaderInitParam &param = m_InputDataFromFileUseIOCP_InitParam;
 
     // 初始化参数
     param.loop = (m_iSendMode == 1); // 根据发送模式设置是否循环
     param.block_size = std::max(1u, m_Setting.FileBlockSize) * 1024;
-    param.io_request_num = std::max(1u, m_Setting.IoRequestNum);
-    param.cpu_id = m_Setting.DiskCpuId;
+  param.io_request_num = std::max(1u, m_Setting.IoRequestNum);
+  param.cpu_id = m_Setting.DiskCpuId;
+  param.cpu_id_span = m_Setting.DiskCpuIdSpan;
+  param.producer_cpu_id = m_Setting.DiskProducerCpuId;
+  param.pending_slack = m_Setting.DiskPendingSlack;
+  param.use_streaming_reader = m_Setting.DiskUseStreamingReader;
+  param.worker_cpu_ids = m_Setting.DiskWorkerCpuIds;
 
     // 初始化输入数据接口
     if (!m_pInputSendData->Init(&param)) {
       // ShowErrorMessage(m_pInputSendData->GetErrorInfo());
+      CLogger::GetInstance().SetModeTag("general");
       return false;
     }
 
@@ -374,6 +425,7 @@ bool MainWindow::startSendData() {
     // 启动数据输入
     if (!m_pInputSendData->Start()) {
       // ShowErrorMessage(m_pInputSendData->GetErrorInfo());
+      CLogger::GetInstance().SetModeTag("general");
       return false;
     }
 
@@ -382,6 +434,7 @@ bool MainWindow::startSendData() {
 }
 
 void MainWindow::stopSendData() {
+  CLogger::GetInstance().SetModeTag("general");
   m_bStopSendData = 1;
   // 停止两种输入源中的任意一个
   if (m_pInputSendData)
@@ -402,22 +455,25 @@ void MainWindow::ShowErrorMessage(const std::string &sErrorInfo) {
 
 void MainWindow::InputData(unsigned char *pData, std::uint64_t uiDataLength,
                            void *pParam) {
-  LOG_INFO("MainWindow::InputData 回调: ptr=%p, len=%llu", pData, (unsigned long long)uiDataLength);
+  LOG_DEBUG("MainWindow::InputData 回调: ptr=%p, len=%llu", pData, (unsigned long long)uiDataLength);
   // 直接发送数据
-  while (!m_pPcieDevice->Send(pData, uiDataLength)) {
+  bool sendSucceeded = false;
+  while (!sendSucceeded) {
+    sendSucceeded = m_pPcieDevice->Send(pData, uiDataLength);
+    if (sendSucceeded) {
+      break;
+    }
     if (m_bStopSendData)
       break;
   }
 
-  // 如果发送成功并且数据来自缓冲池，则释放该块
-  if (m_pSendBufferPool) {
-    // AlignedBufferPool::Owns(ptr) 判断该指针是否属于池
+  // 仅当发送未入队且缓冲来自池时才在此处释放，避免与 DMA 线程重复释放
+  if (!sendSucceeded && m_pSendBufferPool) {
     try {
       if (m_pSendBufferPool->Owns(pData)) {
         m_pSendBufferPool->Release(pData);
       }
     } catch (...) {
-      // 不要让释放错误影响主流程，记录并继续
       LOG_WARN("释放发送缓冲失败或该缓冲不属于池");
     }
   }
@@ -617,9 +673,9 @@ void MainWindow::onTimerUpdate() {
       statusMsg += tr("发送状态：未启动 | ");
     }
 
-    // 添加发送速度
-    float speedInMB =
-        static_cast<float>(status.currentSpeed) / (1024.0f * 1024.0f);
+  // 添加发送速度
+  float speedInMB =
+    static_cast<float>(status.currentSpeed) / (1024.0f * 1024.0f);
     statusMsg += tr("速度：%1 MB/s | ").arg(speedInMB, 0, 'f', 2);
 
     // 更新速率图表数据
@@ -629,6 +685,15 @@ void MainWindow::onTimerUpdate() {
     float totalInMB =
         static_cast<float>(status.totalBytesSent) / (1024.0f * 1024.0f);
     statusMsg += tr("总发送：%1 MB | ").arg(totalInMB, 0, 'f', 2);
+
+    if (status.elapsedNs > 0 && status.totalBytesSent > 0) {
+      double elapsed_s = static_cast<double>(status.elapsedNs) / 1e9;
+      if (elapsed_s > 0.1) {
+        double avg_bps = static_cast<double>(status.totalBytesSent) / elapsed_s;
+        double avg_mb = avg_bps / (1024.0 * 1024.0);
+        statusMsg += tr("平均：%1 MB/s | ").arg(avg_mb, 0, 'f', 2);
+      }
+    }
 
     // 添加队列使用情况
     statusMsg +=

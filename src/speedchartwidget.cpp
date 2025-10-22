@@ -30,7 +30,7 @@ void SpeedChartWidget::initChart() {
   // 创建X轴（时间）
   m_pAxisX = new QValueAxis();
   //   m_pAxisX->setTitleText("时间 (秒)");
-  m_pAxisX->setRange(0, MAX_DATA_POINTS);
+  m_pAxisX->setRange(0, MAX_DATA_POINTS - 1);
   m_pAxisX->setTickCount(10); // 显示的刻度数量
   m_pAxisX->setLabelFormat("%d");
 

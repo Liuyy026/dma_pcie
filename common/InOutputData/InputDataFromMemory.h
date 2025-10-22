@@ -5,10 +5,12 @@
 #include "OrderedDataProcessor.h"
 #include "../utils/AlignedBufferPool.h"
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 struct InputDataFromMemoryInitParam {
   unsigned int block_size = 512 * 1024;
@@ -36,6 +38,7 @@ public:
 
   // 若存在，返回用于零拷贝的缓冲池
   std::shared_ptr<AlignedBufferPool> GetBufferPool() const { return buffer_pool_; }
+  bool IsPoolPrefilled() const { return pool_prefilled_; }
 
   void SetInputDataListener(IInputDataListener *listener) {
     m_OrderedDataProcessor.SetInputDataListener(listener);
@@ -46,6 +49,26 @@ public:
 
 private:
   void ProduceThreadFunc();
+  void ResetDiagnostics();
+  void LogAcquireWait(std::chrono::nanoseconds wait_ns,
+                      std::uint64_t request_index);
+  void LogSlowLoop(std::chrono::nanoseconds loop_ns,
+                   std::uint64_t request_index,
+                   bool used_external_memory);
+  void BuildPatternBuffer(unsigned int block_size);
+  bool PrefillBufferPool();
+  bool ShouldCopyIntoBlock(unsigned int data_length) const;
+
+  struct ProducerDiagnostics {
+    std::uint64_t acquire_wait_events = 0;
+    std::uint64_t acquire_wait_ns = 0;
+    std::uint64_t acquire_wait_ns_max = 0;
+    std::uint64_t slow_loop_events = 0;
+    std::uint64_t slow_loop_ns = 0;
+    std::uint64_t slow_loop_ns_max = 0;
+  } diagnostics_;
+
+  std::chrono::steady_clock::time_point last_metrics_log_;
 
   InputDataFromMemoryInitParam init_param_;
   COrderedDataProcessor m_OrderedDataProcessor;
@@ -55,6 +78,9 @@ private:
   std::atomic<bool> running_;
 
   std::shared_ptr<AlignedBufferPool> buffer_pool_;
+  std::vector<unsigned char> pattern_buffer_;
+  std::size_t pool_block_count_;
+  bool pool_prefilled_;
 
   std::atomic<std::uint64_t> produced_bytes_;
   std::atomic<std::uint64_t> dispatched_bytes_;

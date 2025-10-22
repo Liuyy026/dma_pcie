@@ -14,20 +14,29 @@
 #include <sys/types.h>
 #include <thread>
 #include <cstdio>
+#include <string>
+
+namespace {
+const bool g_pcie_dma_verbose_log = []() -> bool {
+  const char *env = std::getenv("PCIE_DMA_VERBOSE_LOG");
+  if (!env) {
+    return false;
+  }
+  std::string value(env);
+  if (value == "0" || value == "false" || value == "False" ||
+      value == "off" || value == "OFF") {
+    return false;
+  }
+  return true;
+}();
+}
 
 DmaChannelLinux::DmaChannelLinux(int device_fd, unsigned int cpu_id)
     : device_fd_(device_fd), cpu_id_(cpu_id), dma_size_(0), queue_size_(0),
       desc_queue_capacity_(0), stop_flag_(false),
-      thread_state_(ThreadState::NotStarted), step_(0), total_sent_(0),
-      last_sent_(0), monitor_stop_flag_(false) {
+    thread_state_(ThreadState::NotStarted), step_(0), total_sent_(0),
+    monitor_stop_flag_(false) {
   status_.threadState = ThreadState::NotStarted;
-  // 初始化上次更新时间为当前时间
-  last_update_ns_.store(
-      static_cast<std::uint64_t>(
-          std::chrono::duration_cast<std::chrono::nanoseconds>(
-              std::chrono::steady_clock::now().time_since_epoch())
-              .count()),
-      std::memory_order_relaxed);
 }
 
 DmaChannelLinux::~DmaChannelLinux() { Stop(); }
@@ -58,7 +67,7 @@ bool DmaChannelLinux::Initialize(unsigned int dmaSize,
 #endif
 
   total_sent_.store(0, std::memory_order_relaxed);
-  last_sent_.store(0, std::memory_order_relaxed);
+  first_send_ns_.store(0, std::memory_order_relaxed);
   step_.store(0, std::memory_order_relaxed);
 
   status_.queueSize = queue_size_;
@@ -67,6 +76,7 @@ bool DmaChannelLinux::Initialize(unsigned int dmaSize,
   status_.threadState = ThreadState::NotStarted;
   status_.totalBytesSent = 0;
   status_.currentSpeed = 0;
+  status_.elapsedNs = 0;
   status_.step = 0;
 
   return true;
@@ -91,9 +101,16 @@ bool DmaChannelLinux::Start() {
     monitor_stop_flag_.store(false, std::memory_order_relaxed);
     monitor_thread_ = std::thread([this]() {
       const auto interval = std::chrono::seconds(1);
-      std::uint64_t prev_total = 0;
+      std::uint64_t prev_total = total_sent_.load(std::memory_order_relaxed);
+      auto prev_time = std::chrono::steady_clock::now();
       while (!monitor_stop_flag_.load(std::memory_order_relaxed)) {
         std::this_thread::sleep_for(interval);
+        auto now_time = std::chrono::steady_clock::now();
+        auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              now_time - prev_time)
+                              .count();
+        prev_time = now_time;
+
         UpdateStatus();
         // Periodic diagnostic logging: counts and average latencies
         std::uint64_t dcount = desc_write_count_.load(std::memory_order_relaxed);
@@ -105,6 +122,13 @@ bool DmaChannelLinux::Start() {
         std::uint64_t total_bytes = total_sent_.load(std::memory_order_relaxed);
         std::uint64_t delta = (total_bytes >= prev_total) ? (total_bytes - prev_total) : 0;
         prev_total = total_bytes;
+        std::uint64_t speed_bps = 0;
+        if (elapsed_ns > 0) {
+          speed_bps = static_cast<std::uint64_t>(
+              (static_cast<long double>(delta) * 1e9L) /
+              static_cast<long double>(elapsed_ns));
+        }
+        status_.currentSpeed = speed_bps;
         // Write a small JSON live snapshot atomically to /tmp/pcie_live.json
         try {
           std::ostringstream oss;
@@ -114,7 +138,9 @@ bool DmaChannelLinux::Start() {
                   .count());
           oss << "{\n";
           oss << "  \"ts_ns\": " << now_ns << ",\n";
-          oss << "  \"currentSpeed\": " << (unsigned long long)delta << ",\n";
+          oss << "  \"currentSpeed\": " << (unsigned long long)speed_bps << ",\n";
+          oss << "  \"deltaBytes\": " << (unsigned long long)delta << ",\n";
+          oss << "  \"intervalNs\": " << (unsigned long long)elapsed_ns << ",\n";
           oss << "  \"totalBytes\": " << (unsigned long long)total_bytes << ",\n";
           oss << "  \"queueUsed\": " << status_.queueUsed << ",\n";
           oss << "  \"queueSize\": " << status_.queueSize << ",\n";
@@ -137,17 +163,16 @@ bool DmaChannelLinux::Start() {
         } catch (...) {
           // ignore write errors
         }
-  // Publish delta as the authoritative per-second speed to avoid
-  // races between UpdateStatus() calls from worker and monitor threads.
-  status_.currentSpeed = static_cast<std::uint64_t>(delta);
-  LOG_INFO("DMA status: speed=%llu B/s, deltaBytes=%llu, totalBytes=%llu, queueUsed=%zu/%zu (%.1f%%), descWrites=%llu, descAvg=%.3f ms, copyWrites=%llu, copyAvg=%.3f ms, step=%d",
-     (unsigned long long)status_.currentSpeed,
-                 (unsigned long long)delta,
-                 (unsigned long long)total_bytes,
-                 status_.queueUsed, status_.queueSize, status_.queueUsagePercent,
-                 (unsigned long long)dcount, davg_ms,
-                 (unsigned long long)ccount, cavg_ms,
-                 status_.step);
+        if (g_pcie_dma_verbose_log) {
+          LOG_DEBUG("DMA status: speed=%llu B/s, deltaBytes=%llu, totalBytes=%llu, queueUsed=%zu/%zu (%.1f%%), descWrites=%llu, descAvg=%.3f ms, copyWrites=%llu, copyAvg=%.3f ms, step=%d",
+                   (unsigned long long)status_.currentSpeed,
+                   (unsigned long long)delta,
+                   (unsigned long long)total_bytes,
+                   status_.queueUsed, status_.queueSize, status_.queueUsagePercent,
+                   (unsigned long long)dcount, davg_ms,
+                   (unsigned long long)ccount, cavg_ms,
+                   status_.step);
+        }
       }
     });
   } catch (const std::exception &ex) {
@@ -201,6 +226,7 @@ bool DmaChannelLinux::Stop() {
 
   thread_state_.store(ThreadState::Stopped, std::memory_order_release);
   status_.threadState = ThreadState::Stopped;
+  first_send_ns_.store(0, std::memory_order_relaxed);
   // Dump a small JSON summary to a well-known path so external tools
   // (or the user) can read condensed statistics without needing CSV.
   try {
@@ -242,11 +268,12 @@ bool DmaChannelLinux::Reset() {
   desc_queue_.Reset();
 #endif
   total_sent_.store(0, std::memory_order_relaxed);
-  last_sent_.store(0, std::memory_order_relaxed);
+  first_send_ns_.store(0, std::memory_order_relaxed);
   status_.queueUsed = 0;
   status_.queueUsagePercent = 0.0f;
   status_.totalBytesSent = 0;
   status_.currentSpeed = 0;
+  status_.elapsedNs = 0;
   status_.step = 0;
   return true;
 }
@@ -277,7 +304,7 @@ bool DmaChannelLinux::Send(unsigned char *data, unsigned int length) {
     if (!send_queue_.PutFixedLength(data, length)) {
       return false;
     }
-    LOG_INFO("Send 路径: 已放入 send_queue_, len=%u", length);
+  LOG_DEBUG("Send 路径: 已放入 send_queue_, len=%u", length);
 #ifdef DESCRIPTOR_QUEUE_MODE
     if (release_after_copy && buffer_pool_) {
       buffer_pool_->Release(data);
@@ -363,11 +390,15 @@ void DmaChannelLinux::SendThreadFunc() {
       } else {
         step_.store(3, std::memory_order_relaxed);
     // descriptor-path write: measure latency
-  LOG_INFO("描述符路径: 准备写入 device_fd=%d, ptr=%p, len=%u", device_fd_, desc.ptr, desc.length);
+  if (g_pcie_dma_verbose_log) {
+    LOG_DEBUG("描述符路径: 准备写入 device_fd=%d, ptr=%p, len=%u", device_fd_, desc.ptr, desc.length);
+  }
   auto t0 = std::chrono::steady_clock::now();
   ssize_t bytes_written = ::write(device_fd_, desc.ptr, static_cast<size_t>(desc.length));
   auto t1 = std::chrono::steady_clock::now();
-  LOG_INFO("描述符路径: write 返回: %zd, errno=%d (%s)", bytes_written, errno, std::strerror(errno));
+  if (g_pcie_dma_verbose_log) {
+    LOG_DEBUG("描述符路径: write 返回: %zd, errno=%d (%s)", bytes_written, errno, std::strerror(errno));
+  }
 
         if (bytes_written < 0) {
           LOG_ERROR("写入XDMA设备失败: %s", std::strerror(errno));
@@ -417,11 +448,15 @@ void DmaChannelLinux::SendThreadFunc() {
 
       step_.store(3, std::memory_order_relaxed);
       // copy-path write: measure latency
-    LOG_INFO("拷贝路径: 准备写入 device_fd=%d, buf=%p, len=%u", device_fd_, buffer.data(), data_size);
+    if (g_pcie_dma_verbose_log) {
+      LOG_DEBUG("拷贝路径: 准备写入 device_fd=%d, buf=%p, len=%u", device_fd_, buffer.data(), data_size);
+    }
     auto t0c = std::chrono::steady_clock::now();
     ssize_t bytes_written = ::write(device_fd_, buffer.data(), static_cast<size_t>(data_size));
     auto t1c = std::chrono::steady_clock::now();
-    LOG_INFO("拷贝路径: write 返回: %zd, errno=%d (%s)", bytes_written, errno, std::strerror(errno));
+    if (g_pcie_dma_verbose_log) {
+      LOG_DEBUG("拷贝路径: write 返回: %zd, errno=%d (%s)", bytes_written, errno, std::strerror(errno));
+    }
 
       if (bytes_written < 0) {
         LOG_ERROR("写入XDMA设备失败: %s", std::strerror(errno));
@@ -494,19 +529,25 @@ void DmaChannelLinux::UpdateStatus() {
 
   auto total = total_sent_.load(std::memory_order_relaxed);
   status_.totalBytesSent = total;
-  // 使用实际时间间隔计算速率（Bytes per second）
-  auto last = last_sent_.exchange(total, std::memory_order_relaxed);
+
   std::uint64_t now_ns = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now().time_since_epoch())
           .count());
-  std::uint64_t last_ns = last_update_ns_.exchange(now_ns,
-                                                    std::memory_order_relaxed);
-  std::uint64_t delta_ns = (now_ns > last_ns) ? (now_ns - last_ns) : 1;
-  std::uint64_t delta_bytes = (total >= last) ? (total - last) : 0;
-  // bytes per second = delta_bytes / (delta_ns / 1e9)
-  status_.currentSpeed = static_cast<std::uint64_t>(
-      (static_cast<long double>(delta_bytes) * 1e9L) / static_cast<long double>(delta_ns));
+
+  if (total > 0) {
+    std::uint64_t expected = 0;
+    first_send_ns_.compare_exchange_strong(expected, now_ns,
+                                           std::memory_order_relaxed,
+                                           std::memory_order_relaxed);
+  }
+  std::uint64_t start_ns = first_send_ns_.load(std::memory_order_relaxed);
+  if (start_ns > 0 && now_ns >= start_ns) {
+    status_.elapsedNs = now_ns - start_ns;
+  } else {
+    status_.elapsedNs = 0;
+  }
+
   status_.step = step_.load(std::memory_order_relaxed);
 
   // Publish diagnostic counters

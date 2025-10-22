@@ -12,6 +12,7 @@ struct DmaChannelStatus {
   float queueUsagePercent{0.0f};
   std::uint64_t totalBytesSent{0};
   std::uint64_t currentSpeed{0};
+  std::uint64_t elapsedNs{0};
   int step{0};
   // Diagnostic counters for write path timing
   std::uint64_t descWriteCount{0};       // number of descriptor-path writes

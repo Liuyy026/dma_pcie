@@ -10,6 +10,7 @@
 #include <QThread>
 #include <QTimer>
 #include <cstdint>
+#include <vector>
 
 #include "PcieFacade.h"
 #include "json_struct.h"
@@ -37,8 +38,13 @@ struct Setting {
   bool Server;
   unsigned int FileBlockSize;
   unsigned int IoRequestNum;
-  unsigned int PcieCpuId;
-  unsigned int DiskCpuId;
+  int PcieCpuId;
+  int DiskCpuId;
+  int DiskCpuIdSpan;
+  int DiskProducerCpuId;
+  unsigned int DiskPendingSlack;
+  bool DiskUseStreamingReader;
+  std::vector<int> DiskWorkerCpuIds;
 
   Setting() {
     AppName = "PCIe数据发送软件";
@@ -50,15 +56,22 @@ struct Setting {
     ServerUrl = "http://192.168.1.100:8080";
     Server = false;
     // 默认较大的块和更多并发请求以便更容易达到高吞吐
-    FileBlockSize = 2048; // 单位KB -> 2MB
-    IoRequestNum = 32;
+    FileBlockSize = 4096; // 单位KB -> 4MB
+    IoRequestNum = 64;
     PcieCpuId = 1;
     DiskCpuId = 2;
+    DiskCpuIdSpan = 0;
+    DiskProducerCpuId = -1;
+    DiskPendingSlack = 0; // 0 表示自动按并发的25%计算
+    DiskUseStreamingReader = false;
+    DiskWorkerCpuIds.clear();
   }
 };
 
 JS_OBJ_EXT(Setting, AppName, FolderPath, ServerUrl, Server, FileBlockSize,
-           IoRequestNum, PcieCpuId, DiskCpuId)
+           IoRequestNum, PcieCpuId, DiskCpuId, DiskCpuIdSpan,
+           DiskProducerCpuId, DiskPendingSlack, DiskUseStreamingReader,
+           DiskWorkerCpuIds)
 
 namespace Ui {
 class MainWindow;

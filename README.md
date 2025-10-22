@@ -97,13 +97,13 @@ cmake --build build
 下面的参数为在测试高吞吐（例如接近板卡接口极限）时常用的推荐起点，适合在具备高速 PCIe 板卡与驱动的 Linux/Windows 环境下进行评估：
 
 - 推荐默认值（用于快速验证零拷贝 + 高吞吐）
-  - FileBlockSize：2048 （KB，2 MB）
-  - IoRequestNum：32
+  - FileBlockSize：4096 （KB，4 MB）
+  - IoRequestNum：64
   - DMA 大小（UI 中“DMA 大小(KB)”）：1024 （KB）
   - 缓冲区大小（UI 中“缓冲区大小(MB)”）：64 （MB）
 
 - 调优要点
-  - 尽量使用较大块（≥1MB）和较深的并发请求（IoRequestNum ≥ 16~32），可降低每次开销并提升吞吐。
+  - 尽量使用较大块（≥1MB）和较深的并发请求（IoRequestNum ≥ 32~64），可降低每次开销并提升吞吐。
   - 启用零拷贝路径：确保输入读入组件使用 `AlignedBufferPool` 分配的对齐内存，并在打开设备后通过 UI/代码将该池传递给 `PcieFacade::SetBufferPool()`，使 `DmaChannel` 能走描述符（descriptor）路径而不是内存拷贝。
   - 发送缓冲区需足够大以汇聚多个 DMA 请求（64MB 是常见起点），但不要无限增大以免占用过多系统内存。
   - 使用 CPU 亲和（PcieCpuId / DiskCpuId）将文件读取线程与 DMA 发送线程分配到不同核心，减少互相抢占带来的抖动。
@@ -122,10 +122,14 @@ cmake --build build
   "FolderPath": "D:/test/",
   "ServerUrl": "http://192.168.1.100:8080",
   "Server": false,
-  "FileBlockSize": 512,
-  "IoRequestNum": 16,
+  "FileBlockSize": 4096,
+  "IoRequestNum": 64,
   "PcieCpuId": 1,
-  "DiskCpuId": 2
+  "DiskCpuId": 2,
+  "DiskCpuIdSpan": 8,
+  "DiskProducerCpuId": 0,
+  "DiskUseStreamingReader": false,
+  "DiskWorkerCpuIds": []
 }
 ```
 
@@ -133,7 +137,12 @@ cmake --build build
 - `FolderPath`：数据文件默认目录，UI 启动时会读取该路径。
 - `FileBlockSize`：单次 IOCP 读取块大小（单位 KB），会乘以 1024 传入，影响磁盘读取吞吐。
 - `IoRequestNum`：并发 IO 请求数，决定 IOCP 管线深度。
-- `PcieCpuId` / `DiskCpuId`：DMA 发送线程与文件读取线程绑定的逻辑 CPU 编号，用于提升实时性。
+- `PcieCpuId`：DMA 发送线程绑定的逻辑 CPU；设为 -1 可交回系统调度。
+- `DiskCpuId`：POSIX 读取线程的基准 CPU；仍用于兼容旧配置。
+- `DiskCpuIdSpan`：当 `DiskCpuId` ≥0 且 `DiskCpuIdSpan` > 0 时，worker 线程会在 `[DiskCpuId, DiskCpuId + span)` 间轮转绑定。
+- `DiskProducerCpuId`：显式指定 POSIX 生产者（以及有序处理线程）绑定的 CPU，默认沿用 `DiskCpuId`。
+- `DiskUseStreamingReader`：启用新顺序读取管线，仅保留少量读取线程以降低调度开销；可在 `IoRequestNum` 远大于可用核心时勾选或通过环境变量 `PCIE_FILE_STREAMING=1` 临时开启。
+- `DiskWorkerCpuIds`：可选的 worker 绑核列表；若非空，将按顺序为每个 worker 指定 CPU。
 - `Server`、`ServerUrl`：当前版本保留字段，可用于扩展远程控制。
 
 修改配置后需重新启动应用生效。

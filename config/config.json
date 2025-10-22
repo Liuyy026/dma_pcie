@@ -1,10 +1,15 @@
 {
 	"AppName": "",
-	"FolderPath": "D:\\\\",
+	"FolderPath": "/home/gkwx/Desktop/",
 	"ServerUrl": "",
 	"Server": true,
-	"FileBlockSize": 4096,
-	"IoRequestNum": 32,
+	"FileBlockSize": 8192,
+	"IoRequestNum": 128,
 	"PcieCpuId": 1,
-	"DiskCpuId": 2
+	"DiskCpuId": 2,
+	"DiskCpuIdSpan": 8,
+	"DiskProducerCpuId": 0,
+	"DiskPendingSlack": 0,
+	"DiskUseStreamingReader": false,
+	"DiskWorkerCpuIds": []
 }

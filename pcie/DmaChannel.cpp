@@ -63,6 +63,12 @@ bool DmaChannel::Start() {
   m_lastSendDataCount = 0;
   m_step = 0;
 
+  {
+    std::lock_guard<std::mutex> lock(m_statusMutex);
+    m_firstDataTime = std::chrono::steady_clock::time_point{};
+    m_status.elapsedNs = 0;
+  }
+
   if (!StartSendThread()) {
     return false;
   }
@@ -232,6 +238,8 @@ void DmaChannel::ResetMonitorStatus() {
   m_status.queueUsagePercent = 0.0f;
   m_status.threadState = m_threadState;
   m_status.step = m_step;
+  m_status.elapsedNs = 0;
+  m_firstDataTime = std::chrono::steady_clock::time_point{};
 }
 
 void DmaChannel::StartMonitorThread() {
@@ -279,6 +287,15 @@ void DmaChannel::MonitorThread() {
 
       // 计算当前速度
       auto now = std::chrono::steady_clock::now();
+      if (currentSendDataCount > 0 && m_firstDataTime == std::chrono::steady_clock::time_point{}) {
+        m_firstDataTime = now;
+      }
+      if (m_firstDataTime != std::chrono::steady_clock::time_point{}) {
+        auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now - m_firstDataTime).count();
+        m_status.elapsedNs = elapsed_ns > 0 ? static_cast<std::uint64_t>(elapsed_ns) : 0;
+      } else {
+        m_status.elapsedNs = 0;
+      }
       auto duration = std::chrono::duration_cast<std::chrono::seconds>(
                           now - lastSpeedUpdateTime)
                           .count();

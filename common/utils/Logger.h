@@ -1,6 +1,8 @@
 ﻿#ifndef _LOGGER_H_
 #define _LOGGER_H_
 
+#include <atomic>
+#include <filesystem>
 #include <mutex>
 #include <spdlog/spdlog.h>
 #include <string>
@@ -30,6 +32,9 @@ public:
   // 初始化日志系统
   bool Initialize(const std::string &logFolderPath = "",
                   LogLevel level = LogLevel::Info);
+
+  // 调整当前文件日志的模式后缀（如 file/memory/shm 等）
+  void SetModeTag(const std::string &modeTag);
 
   // 清理日志系统资源
   void Cleanup();
@@ -62,6 +67,12 @@ private:
   std::mutex m_mutex;
   bool m_bInitialized;
   LogLevel m_level;
+  std::filesystem::path m_logFolderPath;
+  std::string m_modeTag;
+
+  void configureFileLoggerLocked(const std::string &modeTag);
+  void pruneOldLogsLocked();
+  std::string sanitizeModeTag(const std::string &modeTag) const;
 };
 
 // 全局日志宏定义，方便使用

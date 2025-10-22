@@ -10,7 +10,7 @@
 #include <vector>
 
 // 定义最大乱序支持范围
-#define MAX_DISORDER_GROUPS 8
+#define MAX_DISORDER_GROUPS 16
 // 定义缓存行大小，用于对齐，避免伪共享
 #define CACHE_LINE_SIZE 64
 

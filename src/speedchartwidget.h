@@ -9,7 +9,7 @@
 #include <QtCharts/QLineSeries>
 #include <QtCharts/QValueAxis>
 
-#define MAX_DATA_POINTS 60 // 保存1分钟的数据点
+#define MAX_DATA_POINTS 120 // 0.5秒采样下保存1分钟的数据点
 
 /**
  * @brief 实时速率曲线图表控件

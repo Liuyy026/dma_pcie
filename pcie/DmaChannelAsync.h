@@ -76,6 +76,7 @@ private:
   DmaChannelStatus m_status;
   std::thread m_monitorThread;         // 独立的状态监控线程
   std::atomic<bool> m_monitorStopFlag; // 监控线程停止标志
+  std::chrono::steady_clock::time_point m_firstDataTime;
 
   // 内部方法
   void Cleanup();

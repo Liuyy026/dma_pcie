@@ -1,4 +1,19 @@
 ﻿#include "SPSCMemoryQueue.h"
+#include "Logger.h"
+#include <cerrno>
+#include <cstring>
+
+static inline bool is_power_of_two(uint32_t x) { return x && ((x & (x - 1)) == 0); }
+static inline uint32_t next_power_of_two(uint32_t v) {
+  if (v == 0) return 1;
+  --v;
+  v |= v >> 1;
+  v |= v >> 2;
+  v |= v >> 4;
+  v |= v >> 8;
+  v |= v >> 16;
+  return ++v;
+}
 
 SPSCMemoryQueue::SPSCMemoryQueue()
     : size_(0), buffer_(nullptr), get_index_(0), put_index_(0) {}
@@ -11,11 +26,29 @@ SPSCMemoryQueue::~SPSCMemoryQueue()
 
 bool SPSCMemoryQueue::Init(uint32_t size)
 {
+  if (size == 0) {
+    LOG_ERROR("SPSCMemoryQueue::Init called with size=0");
+    return false;
+  }
+
+  uint32_t requested = size;
+  if (!is_power_of_two(size)) {
+    uint32_t adjusted = next_power_of_two(size);
+    LOG_WARN("SPSCMemoryQueue::Init: size %u is not power-of-two, adjusting to %u",
+             size, adjusted);
+    size = adjusted;
+  }
+
   if (buffer_)
     std::free(buffer_);
+
   buffer_ = static_cast<unsigned char *>(std::malloc(size));
-  if (!buffer_)
+  if (!buffer_) {
+    LOG_ERROR("SPSCMemoryQueue::Init: malloc(%u) failed for requested %u, errno=%d (%s)",
+              size, requested, errno, std::strerror(errno));
+    size_ = 0;
     return false;
+  }
 
   size_ = size;
   Reset();

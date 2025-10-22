@@ -5,15 +5,23 @@
 #include <spdlog/sinks/daily_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <chrono>
-#include <stdarg.h>
+#include <atomic>
+#include <cctype>
 #include <cstdio>
+#include <filesystem>
+#include <stdarg.h>
+#include <system_error>
 
-CLogger::CLogger() : m_bInitialized(false), m_level(LogLevel::Info) {}
+CLogger::CLogger()
+    : m_bInitialized(false), m_level(LogLevel::Info),
+      m_logFolderPath(), m_modeTag("general") {
+  std::atomic_store(&m_file_logger, std::shared_ptr<spdlog::logger>());
+}
 
 CLogger::~CLogger() {
   if (m_bInitialized) {
     m_console_logger.reset();
-    m_file_logger.reset();
+    std::atomic_store(&m_file_logger, std::shared_ptr<spdlog::logger>());
   }
 }
 
@@ -27,9 +35,15 @@ void CLogger::Cleanup() {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (m_bInitialized) {
     m_console_logger.reset();
-    m_file_logger.reset();
+    auto logger = std::atomic_exchange(&m_file_logger, std::shared_ptr<spdlog::logger>());
+    if (logger) {
+      logger->flush();
+      spdlog::drop(logger->name());
+    }
     spdlog::shutdown();
     m_bInitialized = false;
+    m_logFolderPath.clear();
+    m_modeTag = "general";
   }
 }
 
@@ -46,26 +60,28 @@ bool CLogger::Initialize(const std::string &logFolderPath, LogLevel level) {
     // 创建控制台日志记录器
     m_console_logger = spdlog::stdout_color_mt("console");
 
-    // 如果提供了日志文件路径，则创建文件日志记录器
     if (!logFolderPath.empty()) {
-      // 根据当前日期创建新的日志文件，每天一个文件，追加模式
-      std::string baseName = "pcie_demo";
-
-      std::string logPath = logFolderPath + baseName + ".log";
-
-      // 使用daily_file_sink，每天创建一个新日志文件
-      // 参数：文件路径, 小时(0-23), 分钟(0-59), 是否截断
-      auto daily_sink = std::make_shared<spdlog::sinks::daily_file_sink_mt>(
-          logPath, 0, 0, false);
-
-      // 创建logger，添加daily_sink
-      m_file_logger =
-          std::make_shared<spdlog::logger>("file_logger", daily_sink);
-      spdlog::register_logger(m_file_logger);
-
-      // 设置刷新策略，每5秒刷新一次
-      spdlog::flush_every(std::chrono::seconds(5));
-      m_file_logger->flush_on(spdlog::level::err);
+      std::filesystem::path folder(logFolderPath);
+      std::error_code ec;
+      std::filesystem::create_directories(folder, ec);
+      if (ec) {
+        char szErrorMsg[1024] = {0};
+        std::snprintf(szErrorMsg, sizeof(szErrorMsg),
+                      "Logger failed to create directory %s: %s",
+                      folder.string().c_str(), ec.message().c_str());
+#ifdef _WIN32
+        OutputDebugStringA(szErrorMsg);
+#else
+        std::fprintf(stderr, "%s\n", szErrorMsg);
+#endif
+        m_logFolderPath.clear();
+      } else {
+        m_logFolderPath = std::move(folder);
+        pruneOldLogsLocked();
+        configureFileLoggerLocked("general");
+      }
+    } else {
+      m_logFolderPath.clear();
     }
 
     // 设置日志级别
@@ -85,6 +101,22 @@ bool CLogger::Initialize(const std::string &logFolderPath, LogLevel level) {
 #endif
     return false;
   }
+}
+
+void CLogger::SetModeTag(const std::string &modeTag) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (!m_bInitialized)
+    return;
+  if (m_logFolderPath.empty())
+    return;
+
+  std::string sanitized = sanitizeModeTag(modeTag);
+  if (sanitized == m_modeTag)
+    return;
+
+  configureFileLoggerLocked(sanitized);
+  pruneOldLogsLocked();
+  SetLevel(m_level);
 }
 
 void CLogger::SetLevel(LogLevel level) {
@@ -122,8 +154,9 @@ void CLogger::SetLevel(LogLevel level) {
   if (m_console_logger)
     m_console_logger->set_level(spdlog_level);
 
-  if (m_file_logger)
-    m_file_logger->set_level(spdlog_level);
+  auto file_logger = std::atomic_load(&m_file_logger);
+  if (file_logger)
+    file_logger->set_level(spdlog_level);
 }
 
 // 辅助函数，处理格式化字符串和变参
@@ -144,8 +177,9 @@ void CLogger::Trace(const char *fmt, ...) {
   va_end(args);
 
   m_console_logger->trace(buffer);
-  if (m_file_logger)
-    m_file_logger->trace(buffer);
+  auto file_logger = std::atomic_load(&m_file_logger);
+  if (file_logger)
+    file_logger->trace(buffer);
 }
 
 void CLogger::Debug(const char *fmt, ...) {
@@ -159,8 +193,9 @@ void CLogger::Debug(const char *fmt, ...) {
   va_end(args);
 
   m_console_logger->debug(buffer);
-  if (m_file_logger)
-    m_file_logger->debug(buffer);
+  auto file_logger = std::atomic_load(&m_file_logger);
+  if (file_logger)
+    file_logger->debug(buffer);
 }
 
 void CLogger::Info(const char *fmt, ...) {
@@ -174,8 +209,9 @@ void CLogger::Info(const char *fmt, ...) {
   va_end(args);
 
   m_console_logger->info(buffer);
-  if (m_file_logger)
-    m_file_logger->info(buffer);
+  auto file_logger = std::atomic_load(&m_file_logger);
+  if (file_logger)
+    file_logger->info(buffer);
 }
 
 void CLogger::Warn(const char *fmt, ...) {
@@ -189,8 +225,9 @@ void CLogger::Warn(const char *fmt, ...) {
   va_end(args);
 
   m_console_logger->warn(buffer);
-  if (m_file_logger)
-    m_file_logger->warn(buffer);
+  auto file_logger = std::atomic_load(&m_file_logger);
+  if (file_logger)
+    file_logger->warn(buffer);
 }
 
 void CLogger::Error(const char *fmt, ...) {
@@ -204,8 +241,9 @@ void CLogger::Error(const char *fmt, ...) {
   va_end(args);
 
   m_console_logger->error(buffer);
-  if (m_file_logger)
-    m_file_logger->error(buffer);
+  auto file_logger = std::atomic_load(&m_file_logger);
+  if (file_logger)
+    file_logger->error(buffer);
 }
 
 void CLogger::Critical(const char *fmt, ...) {
@@ -219,8 +257,104 @@ void CLogger::Critical(const char *fmt, ...) {
   va_end(args);
 
   m_console_logger->critical(buffer);
-  if (m_file_logger)
-    m_file_logger->critical(buffer);
+  auto file_logger = std::atomic_load(&m_file_logger);
+  if (file_logger)
+    file_logger->critical(buffer);
+}
+
+void CLogger::configureFileLoggerLocked(const std::string &modeTag) {
+  if (m_logFolderPath.empty())
+    return;
+
+  std::string sanitized = sanitizeModeTag(modeTag);
+  const std::string baseName = "pcie_demo";
+  std::string fileName = baseName;
+  if (!sanitized.empty()) {
+    fileName += "_" + sanitized;
+  }
+  fileName += ".log";
+
+  std::filesystem::path fullPath = m_logFolderPath / fileName;
+  auto daily_sink = std::make_shared<spdlog::sinks::daily_file_sink_mt>(
+      fullPath.string(), 0, 0, false);
+
+  auto oldLogger = std::atomic_load(&m_file_logger);
+  if (oldLogger) {
+    oldLogger->flush();
+    spdlog::drop(oldLogger->name());
+  }
+
+  auto newLogger = std::make_shared<spdlog::logger>("file_logger", daily_sink);
+  spdlog::register_logger(newLogger);
+  spdlog::flush_every(std::chrono::seconds(5));
+  newLogger->flush_on(spdlog::level::err);
+  std::atomic_store(&m_file_logger, newLogger);
+  m_modeTag = sanitized;
+}
+
+void CLogger::pruneOldLogsLocked() {
+  if (m_logFolderPath.empty())
+    return;
+
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  if (!fs::exists(m_logFolderPath, ec) || ec)
+    return;
+
+  auto now = std::chrono::system_clock::now();
+  const auto maxAge = std::chrono::hours(24 * 7);
+
+  for (fs::directory_iterator it(m_logFolderPath, ec);
+       !ec && it != fs::directory_iterator(); ++it) {
+    if (!it->is_regular_file(ec) || ec)
+      continue;
+
+    auto ftime = it->last_write_time(ec);
+    if (ec)
+      continue;
+
+    auto sysTime = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+        ftime - decltype(ftime)::clock::now() + now);
+    if (now - sysTime > maxAge) {
+      fs::remove(it->path(), ec);
+      if (!ec && m_console_logger) {
+        m_console_logger->info("删除过期日志: {}", it->path().string());
+      }
+      ec.clear();
+    }
+  }
+}
+
+std::string CLogger::sanitizeModeTag(const std::string &modeTag) const {
+  if (modeTag.empty())
+    return "general";
+
+  std::string cleaned;
+  cleaned.reserve(modeTag.size());
+  bool lastUnderscore = false;
+  for (char ch : modeTag) {
+    unsigned char uch = static_cast<unsigned char>(ch);
+    if (std::isalnum(uch)) {
+      cleaned.push_back(static_cast<char>(std::tolower(uch)));
+      lastUnderscore = false;
+    } else if (ch == '-' || ch == '_') {
+      if (!lastUnderscore && !cleaned.empty()) {
+        cleaned.push_back('_');
+        lastUnderscore = true;
+      }
+    }
+  }
+
+  if (cleaned.empty())
+    return "general";
+
+  if (cleaned.back() == '_')
+    cleaned.pop_back();
+
+  if (cleaned.empty())
+    return "general";
+
+  return cleaned;
 }
 
 // 带文件和行号的日志记录函数实现
@@ -235,8 +369,9 @@ void CLogger::TraceEx(const char *file, int line, const char *fmt, ...) {
   va_end(args);
 
   m_console_logger->trace("[{}:{}] {}", file, line, buffer);
-  if (m_file_logger)
-    m_file_logger->trace("[{}:{}] {}", file, line, buffer);
+  auto file_logger = std::atomic_load(&m_file_logger);
+  if (file_logger)
+    file_logger->trace("[{}:{}] {}", file, line, buffer);
 }
 
 void CLogger::DebugEx(const char *file, int line, const char *fmt, ...) {
@@ -250,8 +385,9 @@ void CLogger::DebugEx(const char *file, int line, const char *fmt, ...) {
   va_end(args);
 
   m_console_logger->debug("[{}:{}] {}", file, line, buffer);
-  if (m_file_logger)
-    m_file_logger->debug("[{}:{}] {}", file, line, buffer);
+  auto file_logger = std::atomic_load(&m_file_logger);
+  if (file_logger)
+    file_logger->debug("[{}:{}] {}", file, line, buffer);
 }
 
 void CLogger::InfoEx(const char *file, int line, const char *fmt, ...) {
@@ -265,8 +401,9 @@ void CLogger::InfoEx(const char *file, int line, const char *fmt, ...) {
   va_end(args);
 
   m_console_logger->info("[{}:{}] {}", file, line, buffer);
-  if (m_file_logger)
-    m_file_logger->info("[{}:{}] {}", file, line, buffer);
+  auto file_logger = std::atomic_load(&m_file_logger);
+  if (file_logger)
+    file_logger->info("[{}:{}] {}", file, line, buffer);
 }
 
 void CLogger::WarnEx(const char *file, int line, const char *fmt, ...) {
@@ -280,8 +417,9 @@ void CLogger::WarnEx(const char *file, int line, const char *fmt, ...) {
   va_end(args);
 
   m_console_logger->warn("[{}:{}] {}", file, line, buffer);
-  if (m_file_logger)
-    m_file_logger->warn("[{}:{}] {}", file, line, buffer);
+  auto file_logger = std::atomic_load(&m_file_logger);
+  if (file_logger)
+    file_logger->warn("[{}:{}] {}", file, line, buffer);
 }
 
 void CLogger::ErrorEx(const char *file, int line, const char *fmt, ...) {
@@ -295,8 +433,9 @@ void CLogger::ErrorEx(const char *file, int line, const char *fmt, ...) {
   va_end(args);
 
   m_console_logger->error("[{}:{}] {}", file, line, buffer);
-  if (m_file_logger)
-    m_file_logger->error("[{}:{}] {}", file, line, buffer);
+  auto file_logger = std::atomic_load(&m_file_logger);
+  if (file_logger)
+    file_logger->error("[{}:{}] {}", file, line, buffer);
 }
 
 void CLogger::CriticalEx(const char *file, int line, const char *fmt, ...) {
@@ -310,6 +449,7 @@ void CLogger::CriticalEx(const char *file, int line, const char *fmt, ...) {
   va_end(args);
 
   m_console_logger->critical("[{}:{}] {}", file, line, buffer);
-  if (m_file_logger)
-    m_file_logger->critical("[{}:{}] {}", file, line, buffer);
+  auto file_logger = std::atomic_load(&m_file_logger);
+  if (file_logger)
+    file_logger->critical("[{}:{}] {}", file, line, buffer);
 }

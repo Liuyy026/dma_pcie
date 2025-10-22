@@ -125,12 +125,13 @@ bool COrderedDataProcessor::StartProcessing() {
     // 创建处理线程
     m_pOutputThread = std::make_unique<std::thread>(
         &COrderedDataProcessor::OutputThreadFunc, this);
-    if (!ThreadAffinity::GetInstance().SetThreadAffinity(
-    m_pOutputThread->native_handle(), m_cpuId)) {
+    if (m_cpuId >= 0 &&
+        !ThreadAffinity::GetInstance().SetThreadAffinity(
+            m_pOutputThread->native_handle(), m_cpuId)) {
 #ifdef _WIN32
-  LOG_ERROR("设置线程CPU亲和性失败，错误码: %d", GetLastError());
+  LOG_WARN("设置线程CPU亲和性失败，错误码: %d", GetLastError());
 #else
-  LOG_ERROR("设置线程CPU亲和性失败，错误: %s", std::strerror(errno));
+  LOG_WARN("设置线程CPU亲和性失败，错误: %s", std::strerror(errno));
 #endif
     }
     return true;
